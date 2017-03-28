@@ -26,7 +26,6 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -39,8 +38,6 @@
 
 // roscpp
 #include <ros/ros.h>
-#include <boost/thread/mutex.hpp>
-#include <boost/thread/thread.hpp>
 #include <sensor_msgs/LaserScan.h>
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/image_encodings.h>
@@ -48,10 +45,15 @@
 #include <nav_msgs/Odometry.h>
 #include <geometry_msgs/Twist.h>
 #include <rosgraph_msgs/Clock.h>
-
 #include <std_srvs/Empty.h>
+#include <tf/transform_broadcaster.h>
+#include <std_msgs/Int8.h>
 
-#include "tf/transform_broadcaster.h"
+#include <string>
+#include <vector>
+
+#include <boost/thread/mutex.hpp>
+#include <boost/thread/thread.hpp>
 
 #define USAGE "stageros <worldfile>"
 #define IMAGE "image"
@@ -61,6 +63,7 @@
 #define BASE_SCAN "base_scan"
 #define BASE_POSE_GROUND_TRUTH "base_pose_ground_truth"
 #define CMD_VEL "cmd_vel"
+#define STALLED "stalled"
 
 // Our node
 class StageNode
@@ -89,6 +92,7 @@ private:
         //ros publishers
         ros::Publisher odom_pub; //one odom
         ros::Publisher ground_truth_pub; //one ground truth
+        ros::Publisher stall_pub; // stall publisher
 
         std::vector<ros::Publisher> image_pubs; //multiple images
         std::vector<ros::Publisher> depth_pubs; //multiple depths
@@ -354,6 +358,7 @@ StageNode::SubscribeModels()
         new_robot->odom_pub = n_.advertise<nav_msgs::Odometry>(mapName(ODOM, r, static_cast<Stg::Model*>(new_robot->positionmodel)), 10);
         new_robot->ground_truth_pub = n_.advertise<nav_msgs::Odometry>(mapName(BASE_POSE_GROUND_TRUTH, r, static_cast<Stg::Model*>(new_robot->positionmodel)), 10);
         new_robot->cmdvel_sub = n_.subscribe<geometry_msgs::Twist>(mapName(CMD_VEL, r, static_cast<Stg::Model*>(new_robot->positionmodel)), 10, boost::bind(&StageNode::cmdvelReceived, this, r, _1));
+        new_robot->stall_pub = n_.advertise<std_msgs::Int8>(mapName(STALLED, r, static_cast<Stg::Model*>(new_robot->positionmodel)), 10);
 
         for (size_t s = 0;  s < new_robot->lasermodels.size(); ++s)
         {
@@ -511,6 +516,11 @@ StageNode::WorldCallback()
 
         robotmodel->odom_pub.publish(odom_msg);
 
+        //publish current stall state
+        std_msgs::Int8 stall_msg;
+        stall_msg.data = robotmodel->positionmodel->Stalled();
+        robotmodel->stall_pub.publish(stall_msg);
+
         // broadcast odometry transform
         tf::Quaternion odomQ;
         tf::quaternionMsgToTF(odom_msg.pose.pose.orientation, odomQ);
@@ -596,6 +606,7 @@ StageNode::WorldCallback()
                 image_msg.header.stamp = sim_time;
 
                 robotmodel->image_pubs[s].publish(image_msg);
+                delete[] temp;
             }
 
             //Get latest depth data
@@ -653,6 +664,7 @@ StageNode::WorldCallback()
                     depth_msg.header.frame_id = mapName("camera", r, static_cast<Stg::Model*>(robotmodel->positionmodel));
                 depth_msg.header.stamp = sim_time;
                 robotmodel->depth_pubs[s].publish(depth_msg);
+                delete[] temp;
             }
 
             //sending camera's tf and info only if image or depth topics are subscribed to
